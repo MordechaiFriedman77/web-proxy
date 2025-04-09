@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 import requests
 from playwright.async_api import async_playwright
+import aiohttp
+import os
 
 app = Flask(__name__)
 
@@ -25,40 +27,64 @@ def fetch_with_requests(url):
         print(f"Requests error: {e}")
         return None
 
+async def get_free_proxy():
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                'https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=elite'
+            ) as resp:
+                text = await resp.text()
+                proxies = text.strip().split('\n')
+                return proxies[0] if proxies else None
+    except Exception as e:
+        print(f"Proxy fetch error: {e}")
+        return None
+
 async def render_with_playwright(url):
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-            page = await context.new_page()
-            # במידה ומדובר ביוטיוב, נוסיף User-Agent מותאם
-            if "youtube.com" in url:
-                await page.set_extra_http_headers({
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-                })
-            await page.goto(url, timeout=60000)
-            # מחכים למצב 'networkidle' כדי לוודא שהדף נטען במלואו
-            await page.wait_for_load_state('networkidle')
-            html = await page.content()
-            await browser.close()
-            return html
+            try:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context()
+                page = await context.new_page()
+                if "youtube.com" in url:
+                    await page.set_extra_http_headers({
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                    })
+                await page.goto(url, timeout=60000)
+                await page.wait_for_load_state('networkidle')
+                html = await page.content()
+                await browser.close()
+                return html
+            except:
+                print("Trying with proxy...")
+                proxy = await get_free_proxy()
+                if not proxy:
+                    raise Exception("No proxy found")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    proxy={"server": f"http://{proxy}"}
+                )
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.goto(url, timeout=60000)
+                await page.wait_for_load_state('networkidle')
+                html = await page.content()
+                await browser.close()
+                with open("proxy_usage.log", "a", encoding="utf-8") as log:
+                    log.write(f"[{url}] used proxy: {proxy}\n")
+                return html
     except Exception as e:
         print(f"Playwright error: {e}")
         return None
 
 def rewrite_html(html, base_url):
-    """
-    עיבוד ה־HTML כך שכל הקישורים (ואת פעולות הטפסים) יעברו דרך השרת שלך.
-    """
     soup = BeautifulSoup(html, "html.parser")
     proxy_prefix = "https://ivr-ai-server.onrender.com/scrape?url="
-    # עדכון קישורים (anchor tags)
     for tag in soup.find_all("a", href=True):
         orig = tag["href"]
-        # משלימים כתובת יחסית לכתובת הבסיס
         new_url = urljoin(base_url, orig)
         tag["href"] = proxy_prefix + urllib.parse.quote(new_url, safe='')
-    # עדכון טפסים (form action)
     for tag in soup.find_all("form", action=True):
         orig = tag["action"]
         new_url = urljoin(base_url, orig)
@@ -72,11 +98,9 @@ def scrape():
     if not url:
         return jsonify({"error": "Missing URL"}), 400
 
-    # אם לא מופיע "http", נניח https
     if not (url.startswith("http://") or url.startswith("https://")):
         url = "https://" + url
 
-    # בחירה אם להשתמש ב־Playwright או ב־Requests:
     if use_browser or is_dynamic(url):
         html = asyncio.run(render_with_playwright(url))
     else:
@@ -85,7 +109,6 @@ def scrape():
     if html is None:
         return jsonify({"error": "Failed to fetch content"}), 500
 
-    # עיבוד מחדש של ה־HTML כך שהקישורים יעברו דרך השרת
     rewritten = rewrite_html(html, url)
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.string if soup.title else "No title"
@@ -100,8 +123,6 @@ def scrape():
 
 @app.route("/")
 def index():
-    # דף הבית – ממשק משתמש פשוט עם טופס להזנת כתובת אתר,
-    # לחיצה תפתח את התוצאה בחלון חדש.
     return """
     <!DOCTYPE html>
     <html lang="he" dir="rtl">
@@ -134,7 +155,6 @@ def index():
                     const res = await fetch("/scrape?url=" + encodeURIComponent(url) + useBrowser);
                     const data = await res.json();
                     if (data.content) {
-                        // פותח חלון חדש ומזריק אליו את ה־HTML שעבר עיבוד
                         const newWindow = window.open("", "_blank");
                         newWindow.document.open();
                         newWindow.document.write(data.content);
