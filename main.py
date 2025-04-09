@@ -17,45 +17,77 @@ def is_dynamic(url: str) -> bool:
 def index():
     return """
     <!DOCTYPE html>
-    <html lang="he" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <title>שרת פרוקסי - Scraper</title>
-        <style>
-            body { font-family: sans-serif; margin: 40px; background: #f4f4f4; }
-            input, select, button { font-size: 1em; padding: 0.5em; margin: 0.3em 0; width: 100%; }
-            .container { max-width: 500px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-            pre { background: #eee; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>Scraper - שרת פרוקסי</h2>
-            <label>הכנס כתובת אתר:</label>
-            <input type="text" id="url" placeholder="https://example.com">
-            <label><input type="checkbox" id="use_browser"> השתמש בדפדפן (Playwright)</label>
-            <button onclick="scrape()">שלח</button>
-            <h3>תוצאה:</h3>
-            <pre id="result">אין עדיין תוצאה...</pre>
-        </div>
-        <script>
-            async function scrape() {
-                const url = document.getElementById("url").value;
-                const useBrowser = document.getElementById("use_browser").checked ? "&use_browser=1" : "";
-                const resBox = document.getElementById("result");
-                resBox.textContent = "טוען...";
-                try {
-                    const res = await fetch(`/scrape?url=${encodeURIComponent(url)}${useBrowser}`);
-                    const data = await res.json();
-                    resBox.textContent = JSON.stringify(data, null, 2);
-                } catch (err) {
-                    resBox.textContent = "שגיאה: " + err;
-                }
+<html lang="iw">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>פרוקסי - דף הבית</title>
+</head>
+<body>
+    <h1>ברוך הבא לפרוקסי שלך!</h1>
+    <form onsubmit="event.preventDefault(); scrape();">
+        <label for="url">הכנס כתובת אתר:</label>
+        <input type="text" id="url" placeholder="הכנס כתובת URL" required />
+        <label>
+            <input type="checkbox" id="use_browser" /> השתמש בבראוזר (לצורך אתרים כמו YouTube)
+        </label>
+        <button type="submit">שלח</button>
+    </form>
+    <h2>תוצאה:</h2>
+    <pre id="result">לא בוצעה שאילתה עדיין...</pre>
+
+    <!-- כפתורים להורדה -->
+    <button id="download_html" onclick="downloadHtmlFile()" style="display:none;">📄 הורד כקובץ HTML</button>
+    <button id="download_pdf" onclick="downloadPdfFile()" style="display:none;">🖨️ הדפס או שמור כ-PDF</button>
+
+    <script>
+        let latestHtml = "";
+
+        async function scrape() {
+            const url = document.getElementById("url").value;
+            const useBrowser = document.getElementById("use_browser").checked ? "&use_browser=1" : "";
+            const resBox = document.getElementById("result");
+            resBox.textContent = "טוען...";
+            latestHtml = "";
+            toggleDownloadButtons(false);
+
+            try {
+                const res = await fetch(`/scrape?url=${encodeURIComponent(url)}${useBrowser}`);
+                const data = await res.json();
+                resBox.textContent = JSON.stringify(data, null, 2);
+                latestHtml = data.content || "";
+                toggleDownloadButtons(true);
+            } catch (err) {
+                resBox.textContent = "שגיאה: " + err;
             }
-        </script>
-    </body>
-    </html>
-    """
+        }
+
+        function toggleDownloadButtons(show) {
+            document.getElementById("download_html").style.display = show ? "block" : "none";
+            document.getElementById("download_pdf").style.display = show ? "block" : "none";
+        }
+
+        function downloadHtmlFile() {
+            const blob = new Blob([latestHtml], { type: "text/html" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "scraped.html";
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadPdfFile() {
+            const w = window.open("", "_blank");
+            w.document.write(latestHtml);
+            w.document.close();
+            w.focus();
+            w.print();
+        }
+    </script>
+</body>
+</html>
+"""
 
 @app.route("/scrape", methods=["GET"])
 def scrape():
