@@ -1,11 +1,12 @@
-from flask import Flask, request, Response, redirect
+from flask import Flask, request, Response
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 
 app = Flask(__name__)
 
-PROXY_BASE = 'https://your-proxy-url.onrender.com/proxy?url='  # שנה לכתובת שלך
+# כתובת הפרוקסי שלך
+PROXY_BASE = 'https://ivr-ai-server.onrender.com/proxy?url='
 
 def rewrite_url(base_url, target):
     absolute = urllib.parse.urljoin(base_url, target)
@@ -27,14 +28,10 @@ def proxy():
     try:
         method = request.method
         headers = {k: v for k, v in request.headers if k.lower() != 'host'}
-
-
         data = request.form.to_dict() if method == 'POST' else None
         resp = requests.request(method, url, headers=headers, data=data, stream=True)
 
         content_type = resp.headers.get('Content-Type', '')
-        disposition = resp.headers.get('Content-Disposition', '')
-
         if 'text/html' in content_type:
             soup = BeautifulSoup(resp.text, 'html.parser')
 
@@ -57,11 +54,10 @@ def proxy():
 
             return Response(str(soup), content_type='text/html')
 
-        proxy_headers = {}
-        if 'Content-Disposition' in resp.headers:
-            proxy_headers['Content-Disposition'] = resp.headers['Content-Disposition']
-        if 'Content-Type' in resp.headers:
-            proxy_headers['Content-Type'] = resp.headers['Content-Type']
+        proxy_headers = {
+            'Content-Type': resp.headers.get('Content-Type', ''),
+            'Content-Disposition': resp.headers.get('Content-Disposition', '')
+        }
 
         return Response(resp.content, headers=proxy_headers)
 
