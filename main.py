@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, send_from_directory
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import requests
@@ -7,111 +7,12 @@ from playwright.async_api import async_playwright
 
 app = Flask(__name__)
 
-# רשימה של דומיינים שידועים כ"דינמיים"
+# רשימה של דומיינים שמוכרים כ"עבור דפים דינמיים"
 DYNAMIC_SITES = ['youtube.com', 'twitter.com', 'tiktok.com', 'instagram.com']
 
 def is_dynamic(url: str) -> bool:
     domain = urlparse(url).netloc
     return any(d in domain for d in DYNAMIC_SITES)
-@app.route("/")
-def index():
-    return """
-    <!DOCTYPE html>
-<html lang="iw">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>פרוקסי - דף הבית</title>
-</head>
-<body>
-    <h1>ברוך הבא לפרוקסי שלך!</h1>
-    <form onsubmit="event.preventDefault(); scrape();">
-        <label for="url">הכנס כתובת אתר:</label>
-        <input type="text" id="url" placeholder="הכנס כתובת URL" required />
-        <label>
-            <input type="checkbox" id="use_browser" /> השתמש בבראוזר (לצורך אתרים כמו YouTube)
-        </label>
-        <button type="submit">שלח</button>
-    </form>
-    <h2>תוצאה:</h2>
-    <pre id="result">לא בוצעה שאילתה עדיין...</pre>
-
-    <!-- כפתורים להורדה -->
-    <button id="download_html" onclick="downloadHtmlFile()" style="display:none;">📄 הורד כקובץ HTML</button>
-    <button id="download_pdf" onclick="downloadPdfFile()" style="display:none;">🖨️ הדפס או שמור כ-PDF</button>
-
-    <script>
-        let latestHtml = "";
-
-        async function scrape() {
-            const url = document.getElementById("url").value;
-            const useBrowser = document.getElementById("use_browser").checked ? "&use_browser=1" : "";
-            const resBox = document.getElementById("result");
-            resBox.textContent = "טוען...";
-            latestHtml = "";
-            toggleDownloadButtons(false);
-
-            try {
-                const res = await fetch(`/scrape?url=${encodeURIComponent(url)}${useBrowser}`);
-                const data = await res.json();
-                resBox.textContent = JSON.stringify(data, null, 2);
-                latestHtml = data.content || "";
-                toggleDownloadButtons(true);
-            } catch (err) {
-                resBox.textContent = "שגיאה: " + err;
-            }
-        }
-
-        function toggleDownloadButtons(show) {
-            document.getElementById("download_html").style.display = show ? "block" : "none";
-            document.getElementById("download_pdf").style.display = show ? "block" : "none";
-        }
-
-        function downloadHtmlFile() {
-            const blob = new Blob([latestHtml], { type: "text/html" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "scraped.html";
-            a.click();
-            URL.revokeObjectURL(url);
-        }
-
-        function downloadPdfFile() {
-            const w = window.open("", "_blank");
-            w.document.write(latestHtml);
-            w.document.close();
-            w.focus();
-            w.print();
-        }
-    </script>
-</body>
-</html>
-"""
-
-@app.route("/scrape", methods=["GET"])
-def scrape():
-    url = request.args.get("url")
-    use_browser = request.args.get("use_browser", "0") == "1"
-    if not url:
-        return jsonify({"error": "Missing URL"}), 400
-
-    if use_browser or is_dynamic(url):
-        html = asyncio.run(render_with_playwright(url))
-    else:
-        html = fetch_with_requests(url)
-
-    if html is None:
-        return jsonify({"error": "Failed to fetch content"}), 500
-
-    soup = BeautifulSoup(html, "html.parser")
-    title = soup.title.string if soup.title else "No title"
-    return jsonify({
-        "url": url,
-        "title": title,
-        "length": len(html),
-        "preview": html[:500]
-    })
 
 def fetch_with_requests(url):
     try:
@@ -128,8 +29,9 @@ async def render_with_playwright(url):
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, timeout=15000)
-            await page.wait_for_timeout(3000)  # תן לעמוד זמן להיטען
+            page.set_default_timeout(30000)
+            await page.goto(url)
+            await page.wait_for_load_state('networkidle')
             html = await page.content()
             await browser.close()
             return html
@@ -137,3 +39,85 @@ async def render_with_playwright(url):
         print(f"Playwright error: {e}")
         return None
 
+@app.route("/scrape", methods=["GET"])
+def scrape():
+    url = request.args.get("url")
+    use_browser = request.args.get("use_browser", "0") == "1"
+    if not url:
+        return jsonify({"error": "Missing URL"}), 400
+
+    # בחר אם להשתמש ב־Playwright או ב־Requests:
+    if use_browser or is_dynamic(url):
+        html = asyncio.run(render_with_playwright(url))
+    else:
+        html = fetch_with_requests(url)
+
+    if html is None:
+        return jsonify({"error": "Failed to fetch content"}), 500
+
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.title.string if soup.title else "No title"
+
+    # נשלח חזרה את כל תוכן הדף בשדה content
+    return jsonify({
+        "url": url,
+        "title": title,
+        "length": len(html),
+        "preview": html[:500],
+        "content": html
+    })
+
+@app.route("/")
+def index():
+    # דף הבית – ממשק משתמש פשוט עם טופס והסברים
+    return """
+    <!DOCTYPE html>
+    <html lang="he" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>שרת פרוקסי - דף הבית</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f4; }
+            .container { max-width: 500px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+            input, button, label { font-size: 1em; padding: 0.5em; margin: 0.3em 0; width: 100%; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Scraper - שרת פרוקסי</h2>
+            <form onsubmit="event.preventDefault(); smartView();">
+                <label>הכנס כתובת אתר:</label>
+                <input type="text" id="urlInput" placeholder="https://example.com" required>
+                <label>
+                    <input type="checkbox" id="use_browser"> השתמש בדפדפן (לאתרים דינמיים)
+                </label>
+                <button type="submit">פתח בחלון חדש</button>
+            </form>
+        </div>
+        <script>
+            async function smartView() {
+                const url = document.getElementById("urlInput").value;
+                const useBrowser = document.getElementById("use_browser").checked ? "&use_browser=1" : "";
+                try {
+                    const res = await fetch("/scrape?url=" + encodeURIComponent(url) + useBrowser);
+                    const data = await res.json();
+                    if (data.content) {
+                        // פותח חלון חדש ומזריק את ה-HTML שהתקבל
+                        const newWindow = window.open("", "_blank");
+                        newWindow.document.open();
+                        newWindow.document.write(data.content);
+                        newWindow.document.close();
+                    } else {
+                        alert("שגיאה: " + (data.error || "לא הוחזר תוכן"));
+                    }
+                } catch (err) {
+                    alert("שגיאה בשליפת התוכן: " + err);
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """
+
+if __name__ == "__main__":
+    app.run(debug=True)
