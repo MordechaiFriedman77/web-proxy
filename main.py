@@ -4,7 +4,36 @@ from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 import requests
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
+
+def fetch_youtube_with_playwright():
+    with sync_playwright() as p:
+        # הפעלת דפדפן עם proxy
+        browser = p.chromium.launch(proxy={'server': 'http://your-proxy-url'})  # כתובת ה-proxy שלך
+        page = browser.new_page()
+
+        # הוספת ה-User-Agent לדף
+        page.set_extra_http_headers({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+        })
+
+        # גישה ל-YouTube
+        page.goto('https://www.youtube.com')
+
+        # ממתינים שהדף יטען
+        page.wait_for_load_state('load')
+
+        # אוספים את תוכן הדף
+        content = page.content()
+
+        # מדפיסים את התוכן
+        print(content)
+
+        # סגירת הדפדפן
+        browser.close()
+
+fetch_youtube_with_playwright()
+
 import aiohttp
 import os
 
