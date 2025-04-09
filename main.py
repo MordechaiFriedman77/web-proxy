@@ -1,13 +1,14 @@
-from flask import Flask, request, jsonify, Response, send_from_directory
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-import requests
 import asyncio
+import urllib.parse
+from flask import Flask, request, jsonify
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse, urljoin
+import requests
 from playwright.async_api import async_playwright
 
 app = Flask(__name__)
 
-# רשימה של דומיינים שמוכרים כ"עבור דפים דינמיים"
+# רשימת אתרים שיש לחשוב עליהם כ"דינמיים" (ניתן להרחיב)
 DYNAMIC_SITES = ['youtube.com', 'twitter.com', 'tiktok.com', 'instagram.com']
 
 def is_dynamic(url: str) -> bool:
@@ -28,9 +29,15 @@ async def render_with_playwright(url):
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            page.set_default_timeout(30000)
-            await page.goto(url)
+            context = await browser.new_context()
+            page = await context.new_page()
+            # במידה ומדובר ביוטיוב, נוסיף User-Agent מותאם
+            if "youtube.com" in url:
+                await page.set_extra_http_headers({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                })
+            await page.goto(url, timeout=60000)
+            # מחכים למצב 'networkidle' כדי לוודא שהדף נטען במלואו
             await page.wait_for_load_state('networkidle')
             html = await page.content()
             await browser.close()
@@ -39,6 +46,25 @@ async def render_with_playwright(url):
         print(f"Playwright error: {e}")
         return None
 
+def rewrite_html(html, base_url):
+    """
+    עיבוד ה־HTML כך שכל הקישורים (ואת פעולות הטפסים) יעברו דרך השרת שלך.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    proxy_prefix = "https://ivr-ai-server.onrender.com/scrape?url="
+    # עדכון קישורים (anchor tags)
+    for tag in soup.find_all("a", href=True):
+        orig = tag["href"]
+        # משלימים כתובת יחסית לכתובת הבסיס
+        new_url = urljoin(base_url, orig)
+        tag["href"] = proxy_prefix + urllib.parse.quote(new_url, safe='')
+    # עדכון טפסים (form action)
+    for tag in soup.find_all("form", action=True):
+        orig = tag["action"]
+        new_url = urljoin(base_url, orig)
+        tag["action"] = proxy_prefix + urllib.parse.quote(new_url, safe='')
+    return str(soup)
+
 @app.route("/scrape", methods=["GET"])
 def scrape():
     url = request.args.get("url")
@@ -46,7 +72,11 @@ def scrape():
     if not url:
         return jsonify({"error": "Missing URL"}), 400
 
-    # בחר אם להשתמש ב־Playwright או ב־Requests:
+    # אם לא מופיע "http", נניח https
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
+
+    # בחירה אם להשתמש ב־Playwright או ב־Requests:
     if use_browser or is_dynamic(url):
         html = asyncio.run(render_with_playwright(url))
     else:
@@ -55,27 +85,29 @@ def scrape():
     if html is None:
         return jsonify({"error": "Failed to fetch content"}), 500
 
+    # עיבוד מחדש של ה־HTML כך שהקישורים יעברו דרך השרת
+    rewritten = rewrite_html(html, url)
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.string if soup.title else "No title"
 
-    # נשלח חזרה את כל תוכן הדף בשדה content
     return jsonify({
         "url": url,
         "title": title,
-        "length": len(html),
-        "preview": html[:500],
-        "content": html
+        "length": len(rewritten),
+        "preview": rewritten[:500],
+        "content": rewritten
     })
 
 @app.route("/")
 def index():
-    # דף הבית – ממשק משתמש פשוט עם טופס והסברים
+    # דף הבית – ממשק משתמש פשוט עם טופס להזנת כתובת אתר,
+    # לחיצה תפתח את התוצאה בחלון חדש.
     return """
     <!DOCTYPE html>
     <html lang="he" dir="rtl">
     <head>
         <meta charset="UTF-8">
-        <title>שרת פרוקסי - דף הבית</title>
+        <title>Scraper - שרת פרוקסי</title>
         <style>
             body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f4; }
             .container { max-width: 500px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
@@ -89,7 +121,7 @@ def index():
                 <label>הכנס כתובת אתר:</label>
                 <input type="text" id="urlInput" placeholder="https://example.com" required>
                 <label>
-                    <input type="checkbox" id="use_browser"> השתמש בדפדפן (לאתרים דינמיים)
+                    <input type="checkbox" id="use_browser"> השתמש בדפדפן (ללאקייה אתרים דינמיים)
                 </label>
                 <button type="submit">פתח בחלון חדש</button>
             </form>
@@ -102,7 +134,7 @@ def index():
                     const res = await fetch("/scrape?url=" + encodeURIComponent(url) + useBrowser);
                     const data = await res.json();
                     if (data.content) {
-                        // פותח חלון חדש ומזריק את ה-HTML שהתקבל
+                        // פותח חלון חדש ומזריק אליו את ה־HTML שעבר עיבוד
                         const newWindow = window.open("", "_blank");
                         newWindow.document.open();
                         newWindow.document.write(data.content);
